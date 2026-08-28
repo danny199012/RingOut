@@ -195,6 +195,13 @@ class BuildConfig:
             if ninja_path and shutil.which("ninja") is None:
                 cmd += [f"-DCMAKE_MAKE_PROGRAM={ninja_path}"]
         cmd += ["-DCMAKE_BUILD_TYPE=Release"]
+        if self.mode in (MODE_NATIVE_WINDOWS, MODE_NATIVE_WINDOWS_VS):
+            # MSVC flags that make this project build cleanly on Windows.
+            # /permissive breaks some of Dolphin's headers; /wd4067 suppresses
+            # "unexpected tokens after preprocessor directive" (from the
+            # /Zc:preprocessor mode the project requires), and /wd4804 /wd4805
+            # suppress unsafe bool->int conversions in vendored code.
+            cmd += ['-DCMAKE_CXX_FLAGS=/Zc:preprocessor /wd4067 /wd4804 /wd4805']
         if self.mode == MODE_WINDOWS_CROSS:
             toolchain = self.source_root / "cmake" / "toolchains" / \
                 "mingw-x86_64.cmake"
@@ -215,13 +222,63 @@ class BuildConfig:
     def build_command(self) -> list[str]:
         """The cmake --build invocation for this mode."""
         cmd = [self._tool_path("cmake"), "--build", str(self.build_dir)]
-        if self.targets:
-            cmd += ["--target", *self.targets]
+        # When DolRecomp is built separately with clang, exclude it from the
+        # main MSVC build so MSVC never tries to compile its POSIX-header C.
+        targets = list(self.targets)
+        if self.needs_separate_dolrecomp():
+            targets = [t for t in targets if t != "dolrecomp"]
+        if targets:
+            cmd += ["--target", *targets]
         if self.jobs is not None:
             cmd += ["--parallel", str(self.jobs)]
         else:
             cmd += ["--parallel"]
         return cmd
+
+    # -- DolRecomp (built separately with clang on native Windows) -----------
+
+    def dolrecomp_source(self) -> Path:
+        """The DolRecomp source directory (sibling or vendored)."""
+        sibling = self.source_root / "DolRecomp"
+        if sibling.is_dir():
+            return sibling
+        return self.source_root / "ModernGekko" / "vendor" / "dolphin" / "DolRecomp"
+
+    def dolrecomp_build_dir(self) -> Path:
+        return self.build_dir / "dolrecomp-clang"
+
+    def needs_separate_dolrecomp(self) -> bool:
+        """True when DolRecomp must be built separately with clang+Ninja.
+
+        DolRecomp's C uses POSIX headers that MSVC lacks, so under a native
+        Windows MSVC build it must be configured and built on its own with
+        clang + Ninja (llvm-mingw provides both). The cross-compile and Linux
+        modes build it inline with the rest of the project.
+        """
+        return self.mode in (MODE_NATIVE_WINDOWS, MODE_NATIVE_WINDOWS_VS)
+
+    def dolrecomp_configure_command(self) -> list[str]:
+        """Configure DolRecomp with clang + Ninja in its own build dir."""
+        cmd = [self._tool_path("cmake"), "-S", str(self.dolrecomp_source()),
+               "-B", str(self.dolrecomp_build_dir()), "-G", "Ninja",
+               "-DCMAKE_BUILD_TYPE=Release",
+               "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"]
+        ninja_path = find_tool("ninja", [self.source_root])
+        if ninja_path and shutil.which("ninja") is None:
+            cmd += [f"-DCMAKE_MAKE_PROGRAM={ninja_path}"]
+        return cmd
+
+    def dolrecomp_build_command(self) -> list[str]:
+        cmd = [self._tool_path("cmake"), "--build",
+               str(self.dolrecomp_build_dir()), "--target", "dolrecomp"]
+        if self.jobs is not None:
+            cmd += ["--parallel", str(self.jobs)]
+        else:
+            cmd += ["--parallel"]
+        return cmd
+
+    def dolrecomp_binary(self) -> Path:
+        return self.dolrecomp_build_dir() / ("dolrecomp" + self.binary_suffix())
 
     def binary_suffix(self) -> str:
         return ".exe" if self.mode in (MODE_NATIVE_WINDOWS,
@@ -231,7 +288,14 @@ class BuildConfig:
     def expected_binaries(self) -> list[Path]:
         suffix = self.binary_suffix()
         names = [t + suffix for t in self.targets]
-        return [self.build_dir / name for name in names]
+        binaries = [self.build_dir / name for name in names]
+        # When DolRecomp is built separately, its binary lands in the
+        # dolrecomp-clang subdirectory, not the main build dir.
+        if self.needs_separate_dolrecomp():
+            for i, name in enumerate(names):
+                if name.startswith("dolrecomp"):
+                    binaries[i] = self.dolrecomp_binary()
+        return binaries
 
 
 # ---------------------------------------------------------------------------
@@ -517,11 +581,39 @@ class BuildRunner:
                                       self.stop_event)
         if not resolver.resolve():
             return False
+        # DolRecomp needs clang on native Windows builds (POSIX headers).
+        if self.config.needs_separate_dolrecomp():
+            if find_tool("clang", [self.config.source_root]) is None:
+                self._log("[DolRecomp needs clang for POSIX headers, but "
+                          "clang was not found. Install LLVM/Clang "
+                          "(https://github.com/llvm/llvm-project/releases) "
+                          "and put clang.exe on PATH, or use the Windows "
+                          "cross-compile mode under WSL.]\n")
+                return False
+            if find_tool("ninja", [self.config.source_root]) is None:
+                self._log("[DolRecomp needs ninja when built separately with "
+                          "clang. Install ninja or let the tool download it "
+                          "(click Build in Native Windows (cmake + ninja) "
+                          "mode first to auto-download it).]\n")
+                return False
         self._log(f"Source root: {self.config.source_root}\n")
         self._log(f"Build dir:  {self.config.build_dir}\n")
         self._log(f"Mode:       {self.config.mode}\n")
         self._log(f"Targets:    {', '.join(self.config.targets)}\n")
         self.config.build_dir.mkdir(parents=True, exist_ok=True)
+        # On native Windows, build DolRecomp separately with clang+Ninja
+        # before the main build, so the main build's MSVC step does not try
+        # to compile DolRecomp's POSIX-header C.
+        if self.config.needs_separate_dolrecomp():
+            self._log("\n--- DolRecomp (clang + Ninja) ---\n")
+            self.config.dolrecomp_build_dir().mkdir(parents=True,
+                                                    exist_ok=True)
+            if not self._run(self.config.dolrecomp_configure_command(),
+                              "configure dolrecomp"):
+                return False
+            if not self._run(self.config.dolrecomp_build_command(),
+                              "build dolrecomp"):
+                return False
         if not self._run(self.config.configure_command(), "configure"):
             return False
         if not self._run(self.config.build_command(), "build"):
