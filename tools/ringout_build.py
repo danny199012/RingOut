@@ -69,7 +69,8 @@ DEFAULT_TARGETS = ["moderngekko-launcher", "moderngekko-run",
 
 # Build mode identifiers shown in the GUI dropdown.
 MODE_NATIVE_LINUX = "Native Linux (cmake + ninja)"
-MODE_NATIVE_WINDOWS = "Native Windows (cmake + ninja)"
+MODE_NATIVE_WINDOWS = "Native Windows (cmake + ninja, needs MSVC/Clang)"
+MODE_NATIVE_WINDOWS_VS = "Native Windows (Visual Studio generator)"
 MODE_WINDOWS_CROSS = "Windows cross-compile from Linux (MinGW)"
 
 
@@ -134,10 +135,10 @@ class BuildConfig:
         if self.mode == MODE_NATIVE_LINUX:
             return ["cmake", "ninja"]
         if self.mode == MODE_NATIVE_WINDOWS:
-            # cmake and ninja are required; a C/C++ compiler is also required
-            # but checked separately by _missing_compiler() because there is no
-            # single portable name for it (cl.exe, clang.exe, gcc.exe).
             return ["cmake", "ninja"]
+        if self.mode == MODE_NATIVE_WINDOWS_VS:
+            # The Visual Studio generator does not need ninja; it uses MSBuild.
+            return ["cmake"]
         if self.mode == MODE_WINDOWS_CROSS:
             return ["cmake", "ninja", "x86_64-w64-mingw32-gcc"]
         return []
@@ -145,20 +146,19 @@ class BuildConfig:
     def _missing_compiler(self) -> Optional[str]:
         """Return a description of the missing native compiler, or None.
 
-        Only relevant for native Windows: the project's Windows release is
-        cross-compiled from Linux with MinGW, so a native Windows build needs
-        either Visual Studio's cl.exe or a clang.exe on PATH. This project's
-        CMake deliberately excludes the Microsoft-SDK-only backends (D3D,
-        WASAPI), so MSVC works but the full Windows SDK is not required.
+        Relevant for both native Windows modes: the project's Windows release
+        is cross-compiled from Linux with MinGW, so a native Windows build
+        needs either Visual Studio's cl.exe or a clang.exe on PATH.
         """
-        if self.mode != MODE_NATIVE_WINDOWS:
+        if self.mode not in (MODE_NATIVE_WINDOWS, MODE_NATIVE_WINDOWS_VS):
             return None
         for compiler in ("cl", "clang", "clang++", "gcc", "g++"):
             if find_tool(compiler, [self.source_root]):
                 return None
         return ("No C/C++ compiler found. Install one of:\n"
                 "  - Visual Studio 2022 with the 'Desktop development with C++' "
-                "workload (run from a 'x64 Native Tools Command Prompt for VS'),\n"
+                "workload, then run this tool from an 'x64 Native Tools Command "
+                "Prompt for VS' (so cl.exe is on PATH),\n"
                 "  - LLVM/Clang (https://github.com/llvm/llvm-project/releases), "
                 "or\n"
                 "  - MinGW-w64 (https://www.mingw-w64.org/).\n"
@@ -181,13 +181,19 @@ class BuildConfig:
         """The cmake -S ... -B ... invocation for this mode."""
         cmd = [self._tool_path("cmake"), "-S", str(self.source_root / "ModernGekko"),
                "-B", str(self.build_dir)]
-        cmd += ["-G", "Ninja"]
-        # If ninja was downloaded into the source root (and is not on PATH),
-        # tell CMake exactly where it is, or it fails with "unable to find a
-        # build program corresponding to Ninja".
-        ninja_path = find_tool("ninja", [self.source_root])
-        if ninja_path and shutil.which("ninja") is None:
-            cmd += [f"-DCMAKE_MAKE_PROGRAM={ninja_path}"]
+        if self.mode == MODE_NATIVE_WINDOWS_VS:
+            # Use the Visual Studio 17 2022 generator (VS 2022) with x64.
+            # This does not need ninja; MSBuild is used instead. The user must
+            # run from a Developer Command Prompt so cl.exe is on PATH.
+            cmd += ["-G", "Visual Studio 17 2022", "-A", "x64"]
+        else:
+            cmd += ["-G", "Ninja"]
+            # If ninja was downloaded into the source root (and is not on PATH),
+            # tell CMake exactly where it is, or it fails with "unable to find a
+            # build program corresponding to Ninja".
+            ninja_path = find_tool("ninja", [self.source_root])
+            if ninja_path and shutil.which("ninja") is None:
+                cmd += [f"-DCMAKE_MAKE_PROGRAM={ninja_path}"]
         cmd += ["-DCMAKE_BUILD_TYPE=Release"]
         if self.mode == MODE_WINDOWS_CROSS:
             toolchain = self.source_root / "cmake" / "toolchains" / \
@@ -219,6 +225,7 @@ class BuildConfig:
 
     def binary_suffix(self) -> str:
         return ".exe" if self.mode in (MODE_NATIVE_WINDOWS,
+                                      MODE_NATIVE_WINDOWS_VS,
                                       MODE_WINDOWS_CROSS) else ""
 
     def expected_binaries(self) -> list[Path]:
@@ -583,7 +590,7 @@ class BuildApp:
         self.mode_var = tk.StringVar(value=self._default_mode())
         ttk.OptionMenu(box, self.mode_var, self.mode_var.get(),
                        MODE_NATIVE_LINUX, MODE_NATIVE_WINDOWS,
-                       MODE_WINDOWS_CROSS).grid(
+                       MODE_NATIVE_WINDOWS_VS, MODE_WINDOWS_CROSS).grid(
             row=1, column=1, sticky=tk.W, padx=4, pady=4)
         ttk.Label(box, text="CMake targets:").grid(
             row=2, column=0, sticky=tk.W, padx=4, pady=4)
@@ -637,7 +644,9 @@ class BuildApp:
 
     def _default_mode(self) -> str:
         if sys.platform == "win32":
-            return MODE_NATIVE_WINDOWS
+            # The Visual Studio generator is the most common Windows setup and
+            # does not require a separate ninja install.
+            return MODE_NATIVE_WINDOWS_VS
         return MODE_NATIVE_LINUX
 
     def _make_config(self) -> BuildConfig:
@@ -763,6 +772,7 @@ def run_headless(args: argparse.Namespace) -> int:
     mode = {
         "linux": MODE_NATIVE_LINUX,
         "windows": MODE_NATIVE_WINDOWS,
+        "vs": MODE_NATIVE_WINDOWS_VS,
         "cross": MODE_WINDOWS_CROSS,
     }[args.mode]
     config = BuildConfig(
@@ -790,7 +800,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--source", help="path to the repository root")
     parser.add_argument("--headless", choices=["build", "check"],
                         help="run without a GUI")
-    parser.add_argument("--mode", choices=["linux", "windows", "cross"],
+    parser.add_argument("--mode", choices=["linux", "windows", "vs", "cross"],
                         default="linux", help="build mode (headless)")
     parser.add_argument("--build-dir", help="output build directory (headless)")
     parser.add_argument("--targets", help="space-separated CMake targets")
@@ -802,6 +812,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return run_headless(args)
     if args.headless == "check":
         mode = {"linux": MODE_NATIVE_LINUX, "windows": MODE_NATIVE_WINDOWS,
+                "vs": MODE_NATIVE_WINDOWS_VS,
                 "cross": MODE_WINDOWS_CROSS}[args.mode]
         config = BuildConfig(
             source_root=Path(args.source or default_source_root()),
