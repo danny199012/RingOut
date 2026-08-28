@@ -134,10 +134,36 @@ class BuildConfig:
         if self.mode == MODE_NATIVE_LINUX:
             return ["cmake", "ninja"]
         if self.mode == MODE_NATIVE_WINDOWS:
+            # cmake and ninja are required; a C/C++ compiler is also required
+            # but checked separately by _missing_compiler() because there is no
+            # single portable name for it (cl.exe, clang.exe, gcc.exe).
             return ["cmake", "ninja"]
         if self.mode == MODE_WINDOWS_CROSS:
             return ["cmake", "ninja", "x86_64-w64-mingw32-gcc"]
         return []
+
+    def _missing_compiler(self) -> Optional[str]:
+        """Return a description of the missing native compiler, or None.
+
+        Only relevant for native Windows: the project's Windows release is
+        cross-compiled from Linux with MinGW, so a native Windows build needs
+        either Visual Studio's cl.exe or a clang.exe on PATH. This project's
+        CMake deliberately excludes the Microsoft-SDK-only backends (D3D,
+        WASAPI), so MSVC works but the full Windows SDK is not required.
+        """
+        if self.mode != MODE_NATIVE_WINDOWS:
+            return None
+        for compiler in ("cl", "clang", "clang++", "gcc", "g++"):
+            if find_tool(compiler, [self.source_root]):
+                return None
+        return ("No C/C++ compiler found. Install one of:\n"
+                "  - Visual Studio 2022 with the 'Desktop development with C++' "
+                "workload (run from a 'x64 Native Tools Command Prompt for VS'),\n"
+                "  - LLVM/Clang (https://github.com/llvm/llvm-project/releases), "
+                "or\n"
+                "  - MinGW-w64 (https://www.mingw-w64.org/).\n"
+                "Alternatively, use WSL and the 'Windows cross-compile from "
+                "Linux' mode, which is how the official release is built.")
 
     def missing_tools(self) -> list[str]:
         # Search the source root too, so tools downloaded by the resolver
@@ -156,6 +182,12 @@ class BuildConfig:
         cmd = [self._tool_path("cmake"), "-S", str(self.source_root / "ModernGekko"),
                "-B", str(self.build_dir)]
         cmd += ["-G", "Ninja"]
+        # If ninja was downloaded into the source root (and is not on PATH),
+        # tell CMake exactly where it is, or it fails with "unable to find a
+        # build program corresponding to Ninja".
+        ninja_path = find_tool("ninja", [self.source_root])
+        if ninja_path and shutil.which("ninja") is None:
+            cmd += [f"-DCMAKE_MAKE_PROGRAM={ninja_path}"]
         cmd += ["-DCMAKE_BUILD_TYPE=Release"]
         if self.mode == MODE_WINDOWS_CROSS:
             toolchain = self.source_root / "cmake" / "toolchains" / \
@@ -345,16 +377,19 @@ class DependencyResolver:
     def resolve(self) -> bool:
         """Ensure all required tools are available. Returns True if ready."""
         missing = self.config.missing_tools()
-        if not missing:
+        compiler_msg = self.config._missing_compiler()
+        if not missing and compiler_msg is None:
             return True
         self._log("\n=== dependency check ===\n")
-        self._log(f"missing: {', '.join(missing)}\n")
-        # Only the native Windows mode can auto-download; Linux/macOS users
-        # use their package manager, and cross-compile needs a full MinGW
+        if missing:
+            self._log(f"missing: {', '.join(missing)}\n")
+        if compiler_msg:
+            self._log(compiler_msg + "\n")
+        # Only the native Windows mode can auto-download build tools; Linux/macOS
+        # users use their package manager, and cross-compile needs a full MinGW
         # toolchain that is too large to fetch here.
         if self.config.mode != MODE_NATIVE_WINDOWS:
-            self._log("Auto-download is only supported for native Windows "
-                       "builds. Install the missing tools with your package "
+            self._log("Install the missing tools with your package "
                        "manager:\n")
             if self.config.mode == MODE_NATIVE_LINUX:
                 self._log("  Debian/Ubuntu: sudo apt install cmake "
@@ -365,8 +400,11 @@ class DependencyResolver:
                            "g++-mingw-w64-x86-64-posix cmake ninja-build\n"
                            "  Arch: sudo pacman -S mingw-w64-gcc cmake ninja\n")
             return False
-        # Native Windows: try to download each missing tool into the source
-        # root so the build finds it without a PATH change.
+        # Native Windows: a missing compiler cannot be auto-downloaded, so
+        # report that and stop before attempting any downloads.
+        if compiler_msg:
+            return False
+        # Auto-download cmake/ninja into the source root.
         for tool in missing:
             if tool not in TOOL_DOWNLOADS:
                 self._log(f"  [no auto-download available for {tool}; install "
