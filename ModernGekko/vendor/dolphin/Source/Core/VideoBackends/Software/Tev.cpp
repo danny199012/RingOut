@@ -419,8 +419,8 @@ void Tev::Draw()
       texcoordSel = 0;
 
     const TEXSCALE& texscale = bpmem.texscale[stageNum2];
-    const s32 scaleS = stageOdd ? texscale.ss1 : texscale.ss0;
-    const s32 scaleT = stageOdd ? texscale.ts1 : texscale.ts0;
+    const s32 scaleS = stageOdd ? static_cast<u32>(texscale.ss1) : static_cast<u32>(texscale.ss0);
+    const s32 scaleT = stageOdd ? static_cast<u32>(texscale.ts1) : static_cast<u32>(texscale.ts0);
 
     TextureSampler::Sample(Uv[texcoordSel].s >> scaleS, Uv[texcoordSel].t >> scaleT,
                            IndirectLod[stageNum], IndirectLinear[stageNum], texmap,
