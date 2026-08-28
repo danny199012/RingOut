@@ -488,7 +488,7 @@ def build_moderngekko(repo, build_root, tools, rebuild, jobs):
     step("Building ModernGekko runtime (moderngekko-run.exe)")
     src = repo / "ModernGekko"
     build = build_root / "moderngekko-build"
-    defs = {"MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME": "ON", "ENABLE_QT": "OFF", "ENABLE_NOGUI": "OFF", "ENABLE_TESTS": "OFF", "ENABLE_ANALYTICS": "OFF", "ENABLE_AUTOUPDATE": "OFF", "USE_RETRO_ACHIEVEMENTS": "OFF", "USE_DISCORD_PRESENCE": "OFF", "USE_MGBA": "OFF", "USE_UPNP": "OFF", "ENCODE_FRAMEDUMPS": "OFF", "ENABLE_LLVM": "OFF", "CMAKE_CXX_FLAGS": "/Zc:preprocessor /wd4067 /wd4804 /wd4805", "CMAKE_C_FLAGS": "/Zc:preprocessor", "CMAKE_CXX_STANDARD": "20"}
+    defs = {"MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME": "ON", "ENABLE_QT": "OFF", "ENABLE_NOGUI": "OFF", "ENABLE_TESTS": "OFF", "ENABLE_ANALYTICS": "OFF", "ENABLE_AUTOUPDATE": "OFF", "USE_RETRO_ACHIEVEMENTS": "OFF", "USE_DISCORD_PRESENCE": "OFF", "USE_MGBA": "OFF", "USE_UPNP": "OFF", "ENCODE_FRAMEDUMPS": "OFF", "ENABLE_LLVM": "OFF", "CMAKE_CXX_FLAGS": "/Zc:preprocessor /permissive /wd4067 /wd4804 /wd4805", "CMAKE_C_FLAGS": "/Zc:preprocessor", "CMAKE_CXX_STANDARD": "20"}
     if tools.msvc_found and tools.vs_generator:
         info("Using MSVC (Visual Studio generator) for the Dolphin runtime")
         cmake_configure_msvc(src, build, tools.vs_generator, defs, tools, rebuild)
