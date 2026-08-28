@@ -173,6 +173,7 @@ private:
 template <typename T>
 class SettingValue
 {
+public:
   using ValueType = T;
 
   friend class NumericSetting<T>;
