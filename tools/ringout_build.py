@@ -92,9 +92,21 @@ def default_source_root() -> Path:
     return Path.cwd()
 
 
-def find_tool(name: str) -> Optional[str]:
-    """Locate an executable on PATH, or None if absent."""
-    return shutil.which(name)
+def find_tool(name: str, extra_dirs: Optional[list[Path]] = None) -> Optional[str]:
+    """Locate an executable on PATH or in extra_dirs, or None if absent."""
+    found = shutil.which(name)
+    if found:
+        return found
+    if extra_dirs:
+        for d in extra_dirs:
+            candidate = d / name
+            if candidate.is_file():
+                return str(candidate)
+            # On Windows, try the .exe suffix too.
+            candidate_exe = d / (name + ".exe")
+            if candidate_exe.is_file():
+                return str(candidate_exe)
+    return None
 
 
 class BuildConfig:
@@ -128,11 +140,20 @@ class BuildConfig:
         return []
 
     def missing_tools(self) -> list[str]:
-        return [t for t in self.required_tools() if find_tool(t) is None]
+        # Search the source root too, so tools downloaded by the resolver
+        # (ninja.exe, cmake.exe dropped next to the source) are found.
+        extra = [self.source_root]
+        return [t for t in self.required_tools()
+                if find_tool(t, extra) is None]
+
+    def _tool_path(self, name: str) -> str:
+        """Resolve a tool to its full path, preferring the source root copy."""
+        found = find_tool(name, [self.source_root])
+        return found if found else name
 
     def configure_command(self) -> list[str]:
         """The cmake -S ... -B ... invocation for this mode."""
-        cmd = ["cmake", "-S", str(self.source_root / "ModernGekko"),
+        cmd = [self._tool_path("cmake"), "-S", str(self.source_root / "ModernGekko"),
                "-B", str(self.build_dir)]
         cmd += ["-G", "Ninja"]
         cmd += ["-DCMAKE_BUILD_TYPE=Release"]
@@ -155,7 +176,7 @@ class BuildConfig:
 
     def build_command(self) -> list[str]:
         """The cmake --build invocation for this mode."""
-        cmd = ["cmake", "--build", str(self.build_dir)]
+        cmd = [self._tool_path("cmake"), "--build", str(self.build_dir)]
         if self.targets:
             cmd += ["--target", *self.targets]
         if self.jobs is not None:
@@ -256,6 +277,140 @@ def needs_rebuild(config: BuildConfig) -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# Dependency resolver
+# ---------------------------------------------------------------------------
+
+# Download URLs for the tools that are hardest to get on Windows. These are the
+# official release assets; the tool downloads, extracts, and drops the
+# executable next to the source root so the build finds it without a PATH edit.
+TOOL_DOWNLOADS = {
+    "ninja": {
+        "url": "https://github.com/ninja-build/ninja/releases/download/"
+               "v1.12.1/ninja-win.zip",
+        "exe": "ninja.exe",
+    },
+    "cmake": {
+        # The portable Windows zip is used (not the installer) so nothing
+        # touches the system PATH or registry.
+        "url": "https://github.com/Kitware/CMake/releases/download/"
+               "v3.30.3/cmake-3.30.3-windows-x86_64.zip",
+        "exe": "bin/cmake.exe",
+    },
+}
+
+
+def _download(url: str, dest: Path, log) -> bool:
+    """Download a URL to dest, streaming progress to log. Returns success."""
+    import urllib.request
+    log(f"  downloading {url}\n")
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp, \
+                open(dest, "wb") as out:
+            total = int(resp.headers.get("Content-Length", 0))
+            done = 0
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                out.write(chunk)
+                done += len(chunk)
+                if total:
+                    log(f"\r  {done // 1024} / {total // 1024} KiB")
+                else:
+                    log(f"\r  {done // 1024} KiB")
+            log("\n")
+        return True
+    except Exception as exc:
+        log(f"  [download failed: {exc}]\n")
+        return False
+
+
+class DependencyResolver:
+    """Checks for and downloads missing build tools before a build starts.
+
+    Only handles tools that have a portable Windows download (ninja, cmake).
+    The MinGW cross-compiler cannot be downloaded this way (it is a large
+    multi-package toolchain), so the cross mode still requires a manual
+    install and reports a clear error if it is missing.
+    """
+
+    def __init__(self, config: BuildConfig, log_queue, stop_event):
+        self.config = config
+        self.log_queue = log_queue
+        self.stop_event = stop_event
+
+    def _log(self, text: str) -> None:
+        self.log_queue.put(text)
+
+    def resolve(self) -> bool:
+        """Ensure all required tools are available. Returns True if ready."""
+        missing = self.config.missing_tools()
+        if not missing:
+            return True
+        self._log("\n=== dependency check ===\n")
+        self._log(f"missing: {', '.join(missing)}\n")
+        # Only the native Windows mode can auto-download; Linux/macOS users
+        # use their package manager, and cross-compile needs a full MinGW
+        # toolchain that is too large to fetch here.
+        if self.config.mode != MODE_NATIVE_WINDOWS:
+            self._log("Auto-download is only supported for native Windows "
+                       "builds. Install the missing tools with your package "
+                       "manager:\n")
+            if self.config.mode == MODE_NATIVE_LINUX:
+                self._log("  Debian/Ubuntu: sudo apt install cmake "
+                           "ninja-build\n  Arch: sudo pacman -S cmake ninja\n")
+            elif self.config.mode == MODE_WINDOWS_CROSS:
+                self._log("  Debian/Ubuntu: sudo apt install "
+                           "gcc-mingw-w64-x86-64-posix "
+                           "g++-mingw-w64-x86-64-posix cmake ninja-build\n"
+                           "  Arch: sudo pacman -S mingw-w64-gcc cmake ninja\n")
+            return False
+        # Native Windows: try to download each missing tool into the source
+        # root so the build finds it without a PATH change.
+        for tool in missing:
+            if tool not in TOOL_DOWNLOADS:
+                self._log(f"  [no auto-download available for {tool}; install "
+                           f"it manually]\n")
+                return False
+            if not self._fetch_tool(tool):
+                return False
+        # Re-check after fetching.
+        still_missing = self.config.missing_tools()
+        if still_missing:
+            self._log(f"  [still missing after download: "
+                      f"{', '.join(still_missing)}]\n")
+            return False
+        self._log("  all required tools are now available\n")
+        return True
+
+    def _fetch_tool(self, tool: str) -> bool:
+        info = TOOL_DOWNLOADS[tool]
+        archive = self.config.source_root / f"{tool}.zip"
+        self._log(f"  fetching {tool}...\n")
+        if not _download(info["url"], archive, self._log):
+            return False
+        if self.stop_event.is_set():
+            return False
+        # Extract just the executable we need into the source root.
+        import zipfile
+        try:
+            with zipfile.ZipFile(archive) as zf:
+                self._log(f"  extracting {info['exe']}...\n")
+                zf.extract(info["exe"], self.config.source_root)
+        except Exception as exc:
+            self._log(f"  [extract failed: {exc}]\n")
+            return False
+        finally:
+            try:
+                archive.unlink()
+            except OSError:
+                pass
+        exe_path = self.config.source_root / Path(info["exe"]).name
+        self._log(f"  installed {tool} -> {exe_path}\n")
+        return True
+
+
+# ---------------------------------------------------------------------------
 # Build runner
 # ---------------------------------------------------------------------------
 
@@ -313,13 +468,9 @@ class BuildRunner:
         return True
 
     def run(self) -> bool:
-        missing = self.config.missing_tools()
-        if missing:
-            self._log(f"[missing required tools: {', '.join(missing)}]\n")
-            self._log("Install them and try again. For the Windows cross "
-                      "mode you need a MinGW-w64 POSIX toolchain "
-                      "(gcc-mingw-w64-x86-64-posix on Ubuntu, mingw-w64 on "
-                      "Arch).\n")
+        resolver = DependencyResolver(self.config, self.log_queue,
+                                      self.stop_event)
+        if not resolver.resolve():
             return False
         self._log(f"Source root: {self.config.source_root}\n")
         self._log(f"Build dir:  {self.config.build_dir}\n")
