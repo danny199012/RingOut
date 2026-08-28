@@ -245,6 +245,58 @@ int main() {
       return 18;
   }
 
+  // Two gamepads must each get their own GameCube port. This is the regression
+  // test for the dual-controller bug: before the multi-port writer, only
+  // [GCPad1] was ever written, so a second pad had no profile and Dolphin
+  // reported it disconnected. The runtime enables SI port 2 based on the count
+  // returned here, so both halves of the fix are exercised.
+  const fs::path multi_directory = directory / "multi";
+  std::vector<std::string> two_pads = {"SDL/0/DualSense Wireless Controller",
+                                       "SDL/1/DualSense Wireless Controller"};
+  std::string multi_message;
+  if (!moderngekko::frontend::WriteGamepadGCPadConfigMulti(
+          multi_directory, two_pads, &multi_message))
+    return 30;
+  std::ifstream multi_input(multi_directory / "Config" / "GCPadNew.ini");
+  const std::string multi_config{std::istreambuf_iterator<char>(multi_input),
+                                 std::istreambuf_iterator<char>()};
+  // Device is alphabetically ordered after Buttons/C-Stick/D-Pad by the
+  // std::map in AppendGCPadSection, so check it appears within each section
+  // rather than immediately after the header.
+  if (!multi_config.contains("[GCPad1]\n") ||
+      !multi_config.contains("Device = SDL/0/DualSense Wireless Controller\n") ||
+      !multi_config.contains("[GCPad2]\n") ||
+      !multi_config.contains("Device = SDL/1/DualSense Wireless Controller\n") ||
+      !multi_config.contains("Buttons/A = `Button S`\n") ||
+      !multi_config.contains("Main Stick/Calibration = ") ||
+      multi_config.contains("[GCPad3]"))
+    return 31;
+  // Two identical DualSense pads differ only by their SDL index; both sections
+  // must be present and bound to the right index, not collapsed onto port 1.
+  if (moderngekko::frontend::GCPadConfiguredPortCount(multi_directory) != 2)
+    return 32;
+  // A single-pad multi write must still produce exactly one section.
+  const fs::path single_directory = directory / "single";
+  std::vector<std::string> one_pad = {"SDL/0/Solo Pad"};
+  if (!moderngekko::frontend::WriteGamepadGCPadConfigMulti(
+          single_directory, one_pad, &multi_message) ||
+      moderngekko::frontend::GCPadConfiguredPortCount(single_directory) != 1)
+    return 33;
+  // An empty device list is rejected, and a hand-edited profile with only a
+  // second port still reports 2 so the runtime enables port 2 for it.
+  if (moderngekko::frontend::WriteGamepadGCPadConfigMulti(
+          single_directory, std::span<const std::string>{}, &multi_message))
+    return 34;
+  const fs::path hand_edited = directory / "hand";
+  {
+    std::error_code ec;
+    fs::create_directories(hand_edited / "Config", ec);
+    std::ofstream he(hand_edited / "Config" / "GCPadNew.ini");
+    he << "[GCPad2]\nDevice = SDL/1/Some Pad\nButtons/A = `Button S`\n";
+  }
+  if (moderngekko::frontend::GCPadConfiguredPortCount(hand_edited) != 2)
+    return 35;
+
   fs::remove_all(directory);
   return 0;
 }

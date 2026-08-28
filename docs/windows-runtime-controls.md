@@ -25,6 +25,55 @@ output-teardown, and corrected-frontier fault fixes. That does not validate the
 Windows artifact path. Do not apply the branch instructions below to the
 published `ell.6` ZIP.
 
+### 2026-08-28 multi-controller (second pad) fix — unverified, needs rebuild + physical test
+
+**Problem.** A second controller (e.g. a second DualSense) never registered in
+the RingOut GUI: the game never offered "P2 press start". Two independent
+gaps, both in the frontend layer, caused it:
+
+1. `SIDevice1` defaults to `SIDEVICE_NONE`
+   (`ModernGekko/vendor/dolphin/Source/Core/Core/Config/MainSettings.cpp:169-178`).
+   Only GameCube port 1 defaults to a controller; ports 2-4 are electrically
+   empty. Nothing in the runtime or launcher ever enabled port 2.
+2. The pad-profile generator only ever wrote a `[GCPad1]` section
+   (`ModernGekko/tools/frontend_config.cpp` `WriteKeyboardGCPadConfig` and
+   `SaveGamepadProfile`, both GCPad1-only; `EnsureControllerConfig` called
+   `WriteGamepadGCPadConfig(... controllers.front() ...)`). With no `[GCPad2]`
+   section, Dolphin loaded a pad with no device and reported it disconnected.
+
+A previous attempt patched `GCPadEmu.cpp` `GetInput()` with a name-only device
+fallback. That was the wrong layer: it only flipped `isConnected` while the
+control references still pointed at the missing device, so the pad would read
+centred/no input. It is not applied here. The runtime already has the correct
+rebind mechanism (`RebindPadsToPresentDevices`, `dolphin_runtime.cpp:184-218`).
+
+**Fix (source, not yet built or physically tested).**
+
+- `frontend_config.cpp`/`.hpp`: new `WriteGamepadGCPadConfigMulti(devices)`
+  writes `[GCPad1]`, `[GCPad2]`, ... up to four, each bound to its own SDL
+  device with the same default bindings as the single-pad writer.
+  `GCPadConfiguredPortCount(user_directory)` reports the highest `[GCPadN]`
+  with a non-empty `Device`. `EnsureControllerConfig` now maps every
+  detected/supplied gamepad to its own port instead of only `controllers.front()`.
+- `dolphin_runtime.cpp` `ApplyCoreSettings`: enables `SIDevice1..3` as
+  `SIDEVICE_GC_CONTROLLER` up to `GCPadConfiguredPortCount`, so the SI bus
+  actually has a controller on each configured port. This is driven by the
+  profile, so it also covers a hand-edited `GCPadNew.ini`.
+
+**Note on manual `.ini` edits.** In Dolphin.ini the GameCube port keys are
+`SIDevice0`..`SIDevice3` under `[Core]` (value `6` = standard controller).
+`PadType0`..`PadType3` is the key name used only in *game-specific* INI
+`[Controls]` sections (via `GameConfigLoader.cpp:90-92`); writing `PadType1=6`
+in Dolphin.ini `[Core]` is ignored. This is a likely reason prior manual edits
+failed even when a `[GCPad2]` section existed.
+
+**Tests.** `ModernGekko/tests/frontend_config_test.cpp` adds return codes 30-35
+covering the two-pad write, the port-count reader, the single-pad path, empty
+rejection, and a hand-edited `[GCPad2]`-only profile. The standalone
+`frontend_config` test target compiles and passes with `-DMODERNGEKKO_NO_SDL_GAMEPADS`.
+The full Dolphin runtime build and a physical two-DualSense run are still
+required before treating this as shipped behavior.
+
 ### 2026-08-26 controller-remapping update
 
 Implementation checkpoint `869faa0e1747052d795cf192a94af1d1de0bb362`

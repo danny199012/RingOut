@@ -123,8 +123,27 @@ std::optional<std::string> DolphinSdlButtonExpression(int button);
 std::optional<std::string> DolphinSdlAxisExpression(int axis, int value);
 // Write a GCPadNew.ini bound to an SDL gamepad. `device` is a fully qualified
 // Dolphin device name ("SDL/0/<pad name>"); DetectSdlGamepads produces them.
+// Only port 1 is written; this is the single-pad entry point used by the
+// launcher remap UI and the keyboard fallback.
 bool WriteGamepadGCPadConfig(const std::filesystem::path &user_directory,
                              std::string_view device, std::string *message);
+// Write a GCPadNew.ini that maps every supplied SDL gamepad to its own GameCube
+// port: devices[0] -> [GCPad1], devices[1] -> [GCPad2], and so on up to four.
+// Each port gets the same default binding set as WriteGamepadGCPadConfig. This
+// is what makes a second controller usable: without a [GCPad2] section Dolphin
+// loads a pad with no device and reports it disconnected, so the game never
+// offers "P2 press start". An existing file is replaced in full, because the
+// port->device assignment is the whole point and partial merges would leave a
+// stale second port bound to a pad that is no longer present.
+bool WriteGamepadGCPadConfigMulti(
+    const std::filesystem::path &user_directory,
+    std::span<const std::string> devices, std::string *message);
+// Number of [GCPad1..4] sections in GCPadNew.ini that name a non-empty Device.
+// The runtime uses this to decide which GameCube SI ports to enable: Dolphin's
+// default is one controller on port 1 and NONE on ports 2-4, so a profile with
+// a second pad must be paired with SIDevice1 = GC controller or that port is
+// electrically empty and the pad reads as disconnected regardless of bindings.
+int GCPadConfiguredPortCount(const std::filesystem::path &user_directory);
 // Connected SDL gamepads, as Dolphin device names, in Dolphin's own order.
 // Empty when there is no pad -- which is the signal to fall back to a keyboard
 // profile. Enumerated rather than hardcoded: the Steam Deck's pad reaches us

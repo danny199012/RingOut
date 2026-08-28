@@ -12,6 +12,7 @@
 #include "Core/Core.h"
 #include "Core/HW/GBACore.h"
 #include "Core/HW/GCPad.h"
+#include "Core/HW/SI/SI_Device.h"
 #include "Core/Host.h"
 #include "Core/NetPlay/NetPlayClient.h"
 #include "Core/PowerPC/JitInterface.h"
@@ -28,6 +29,7 @@
 #include "VideoCommon/RecompMenu.h"
 #include "VideoCommon/VideoConfig.h"
 #include "dolphin_runtime_internal.hpp"
+#include "frontend_config.hpp"
 #include "moderngekko/cpu_state.h"
 #include "moderngekko/module_loader.hpp"
 
@@ -293,7 +295,8 @@ std::unique_ptr<Platform> CreateHostPlatform(const RuntimeConfig &config) {
   return nullptr;
 }
 
-void ApplyCoreSettings(const GameMetadata &metadata) {
+void ApplyCoreSettings(const GameMetadata &metadata,
+                        const std::filesystem::path &user_directory) {
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
   // Correctness first: this recomp core has produced live GFX FIFO desyncs in
   // offline dual-core mode (the resulting alert itself recommends disabling
@@ -345,6 +348,29 @@ void ApplyCoreSettings(const GameMetadata &metadata) {
   // (verified section by section against the stock DOL). Same spin, same skip.
   if (metadata.disc_id == "GRSEAF" || metadata.disc_id == "GRSEPS")
     Config::SetBase(Config::MAIN_STATICRECOMP_IDLE_PC, 0x80185DECu);
+
+  // GameCube controller ports 2-4 default to SIDEVICE_NONE, so a second pad
+  // profile is electrically dead unless the matching SI port is enabled here.
+  // GCPadConfiguredPortCount reads GCPadNew.ini and reports the highest port
+  // with a non-empty Device. We set SIDevice1..3 to a standard GC controller up
+  // to that count; anything beyond stays NONE. This pairs with the frontend's
+  // multi-port writer (WriteGamepadGCPadConfigMulti) and also covers a profile
+  // the user hand-edited, since the SI enabling is driven by the profile, not
+  // by how it was produced. Port 1 is already a GC controller by default.
+  const int configured_ports =
+      moderngekko::frontend::GCPadConfiguredPortCount(user_directory);
+  for (int port = 1; port < 4 && port < configured_ports; ++port) {
+    // SetBase, not SetCurrent: this must win over a stale SIDeviceN left in
+    // Dolphin.ini by a prior run or a manual edit, or the base default (NONE)
+    // would shadow it. GetActiveLayerForConfig guards SetBaseOrCurrent from
+    // clobbering an explicit game-config override, but a GameCube title here
+    // has no such override, so SetBase is the direct and correct lever.
+    Config::SetBase(Config::GetInfoForSIDevice(port),
+                    SerialInterface::SIDEVICE_GC_CONTROLLER);
+  }
+  if (configured_ports > 1)
+    std::fprintf(stderr, "[input] enabling GameCube controller ports 1-%d\n",
+                configured_ports);
 }
 
 void ApplyGraphicsSettings(const GraphicsSettings &graphics, bool headless) {
@@ -496,7 +522,7 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   RebindPadsToPresentDevices();
   impl->platform->SetTitle(impl->title);
 
-  ApplyCoreSettings(impl->metadata);
+  ApplyCoreSettings(impl->metadata, impl->config.user_directory);
   ApplyGraphicsSettings(impl->config.graphics, impl->config.headless);
   ApplyAudioSettings(impl->config.audio, impl->config.headless);
   Config::SetBase(Config::MAIN_INPUT_BACKGROUND_INPUT,

@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <sstream>
 #include <string_view>
 
 #ifndef MODERNGEKKO_NO_SDL_GAMEPADS
@@ -776,6 +777,120 @@ std::vector<std::string> DetectSdlGamepads() {
   return devices;
 }
 
+namespace {
+// Emits one fully-formed [GCPadN] section for a single device. Mirrors the
+// binding set produced by SaveGamepadProfile's append_missing, so a profile
+// written here loads identically to one the remap UI would later edit. The
+// settings are written through a std::map to match SaveGamepadProfile's
+// alphabetical ordering exactly.
+void AppendGCPadSection(std::ostringstream &output, int port,
+                        std::string_view device) {
+  std::map<std::string, std::string> settings;
+  settings["Device"] = std::string(device);
+  for (std::size_t i = 0; i < kGamepadControls.size(); ++i)
+    settings[kGamepadControls[i].key] = kGamepadControls[i].default_expression;
+  settings["Triggers/L-Analog"] =
+      kGamepadControls[ControlIndex(GamepadControl::L)].default_expression;
+  settings["Triggers/R-Analog"] =
+      kGamepadControls[ControlIndex(GamepadControl::R)].default_expression;
+
+  output << "[GCPad" << port << "]\n";
+  for (const auto &[key, value] : settings)
+    output << key << " = " << value << '\n';
+  output << "Main Stick/Calibration = 100.00 141.42 100.00 "
+            "141.42 100.00 141.42 100.00 141.42\n"
+         << "C-Stick/Calibration = 100.00 141.42 100.00 "
+            "141.42 100.00 141.42 100.00 141.42\n";
+}
+} // namespace
+
+bool WriteGamepadGCPadConfigMulti(const fs::path &user_directory,
+                                   std::span<const std::string> devices,
+                                   std::string *message) {
+  if (devices.empty()) {
+    if (message)
+      *message = "no gamepads supplied for multi-port config";
+    return false;
+  }
+  if (devices.size() > 4) {
+    if (message)
+      *message = "at most four GameCube ports can be mapped";
+    return false;
+  }
+  for (const std::string &device : devices) {
+    if (!ValidProfileValue(device)) {
+      if (message)
+        *message = "invalid gamepad device name";
+      return false;
+    }
+  }
+
+  const fs::path destination = user_directory / "Config" / "GCPadNew.ini";
+  std::ostringstream rendered;
+  for (std::size_t i = 0; i < devices.size(); ++i) {
+    AppendGCPadSection(rendered, static_cast<int>(i + 1), devices[i]);
+    // A blank line separates sections, matching SaveGamepadProfile's behavior
+    // when it appends a new [GCPad1] to a non-empty file.
+    if (i + 1 != devices.size())
+      rendered << '\n';
+  }
+  // Split the rendered profile into the line vector WriteProfileLines expects
+  // (it appends '\n' to each entry).
+  std::vector<std::string> lines;
+  std::string remaining = rendered.str();
+  while (!remaining.empty()) {
+    const auto newline = remaining.find('\n');
+    if (newline == std::string::npos) {
+      lines.push_back(std::move(remaining));
+      break;
+    }
+    lines.push_back(remaining.substr(0, newline));
+    remaining.erase(0, newline + 1);
+  }
+
+  if (!WriteProfileLines(destination, lines, message))
+    return false;
+  if (message)
+    *message = std::to_string(devices.size()) + " gamepad" +
+               (devices.size() == 1 ? " mapped" : "s mapped");
+  return true;
+}
+
+int GCPadConfiguredPortCount(const fs::path &user_directory) {
+  const fs::path destination = user_directory / "Config" / "GCPadNew.ini";
+  std::ifstream input(destination);
+  if (!input)
+    return 0;
+  int port = 0;          // 1-based once inside a section; 0 means "no section yet"
+  int configured = 0;
+  std::string line;
+  while (std::getline(input, line)) {
+    if (!line.empty() && line.back() == '\r')
+      line.pop_back();
+    const std::string trimmed = Trim(line);
+    if (trimmed.starts_with('[') && trimmed.ends_with(']')) {
+      port = 0;
+      if (trimmed.size() == 8 && trimmed.starts_with("[GCPad") &&
+          trimmed[6] >= '1' && trimmed[6] <= '4' && trimmed[7] == ']')
+        port = trimmed[6] - '0';
+      continue;
+    }
+    if (port == 0)
+      continue;
+    const std::size_t separator = trimmed.find('=');
+    if (separator == std::string::npos)
+      continue;
+    if (Trim(trimmed.substr(0, separator)) != "Device")
+      continue;
+    // A non-empty Device line inside [GCPadN] means port N is bound. Report the
+    // highest such N, not a contiguous count, so a profile that only has
+    // [GCPad1] and [GCPad3] still tells the runtime "port 3 needs enabling".
+    if (!Trim(trimmed.substr(separator + 1)).empty() && port > configured)
+      configured = port;
+  }
+  return configured;
+}
+
 bool WriteGamepadGCPadConfig(const fs::path &user_directory,
                              std::string_view device, std::string *message) {
   return SaveGamepadProfile(user_directory, DefaultGamepadProfile(device),
@@ -912,10 +1027,20 @@ bool EnsureControllerConfig(const fs::path &user_directory,
     }
 
     std::string pad_message;
+    // Map every supplied/detected gamepad to its own GameCube port. Writing
+    // only controllers.front() here is exactly why a second controller never
+    // worked: port 1 got a [GCPad1] section and port 2 got nothing, so Dolphin
+    // loaded a pad with no device and reported it disconnected. With two or
+    // more pads we write [GCPad1], [GCPad2], ... and the runtime then enables
+    // the matching SI devices. A single pad still goes through the single-pad
+    // writer so the launcher remap UI's GCPad1-only load/save contract holds.
     const bool wrote_pad =
         !controllers.empty() &&
-        WriteGamepadGCPadConfig(user_directory, controllers.front(),
-                                &pad_message);
+        (controllers.size() == 1
+             ? WriteGamepadGCPadConfig(user_directory, controllers.front(),
+                                        &pad_message)
+             : WriteGamepadGCPadConfigMulti(user_directory, controllers,
+                                            &pad_message));
     if (!wrote_pad)
       WriteKeyboardGCPadConfig(user_directory, KeyboardLayout::Player1,
                                &pad_message);
