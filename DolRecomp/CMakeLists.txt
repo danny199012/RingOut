@@ -7,6 +7,13 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # Portable warnings for local development and CI.
 if(MSVC)
     add_compile_options(/W3)
+    # MSVC only enables C11 <stdatomic.h> (_Atomic) under /std:c11. DolRecomp's
+    # backend (emitter.c, dispatch.c, codegen.c) uses it; without the flag the
+    # build fails with vcruntime_c11_stdatomic.h C1189 "C atomic support is not
+    # enabled" when this tree is built as a subdirectory of ModernGekko (the
+    # parent's -DCMAKE_C_FLAGS does not reliably reach subdirectory targets in
+    # the Visual Studio generator).
+    add_compile_options(/std:c11)
 else()
     add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 endif()
