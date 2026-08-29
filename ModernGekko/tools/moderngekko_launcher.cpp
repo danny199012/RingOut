@@ -743,9 +743,13 @@ int main(int argc, char **argv) {
   }
   SDL_SetWindowMinimumSize(window, static_cast<int>(900 * scale),
                            static_cast<int>(600 * scale));
-  SDL_Renderer *renderer = SDL_CreateRenderer(window, "vulkan");
-  if (!renderer)
-    renderer = SDL_CreateRenderer(window, nullptr);
+  // Let SDL pick the renderer (D3D11 first on Windows). This used to request
+  // "vulkan" explicitly, which glitches the UI on at least one player GPU
+  // (RTX 5070 Ti, measured 2026-08-29: the corner art drew as the imgui font
+  // atlas whenever a sidebar button was hovered; the same driver half-rates
+  // Vulkan+vsync and black-screens official Dolphin's Vulkan backend).
+  // nullptr still honours the SDL_RENDER_DRIVER env var for debugging.
+  SDL_Renderer *renderer = SDL_CreateRenderer(window, nullptr);
   if (!renderer) {
     SDL_Log("SDL_CreateRenderer failed: %s", SDL_GetError());
     SDL_DestroyWindow(window);
