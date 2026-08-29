@@ -19,8 +19,11 @@ if(GIT_FOUND)
       OUTPUT_VARIABLE DOLPHIN_WC_BRANCH
       OUTPUT_STRIP_TRAILING_WHITESPACE)
   # defines DOLPHIN_WC_COMMITS_AHEAD_MASTER
+  # Fresh clones of this repo have 'main', not 'master': quiet the resulting
+  # "fatal: bad revision '^master'" and fall back to 0 below.
   execute_process(WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} COMMAND ${GIT_EXECUTABLE} rev-list --count HEAD ^master
       OUTPUT_VARIABLE DOLPHIN_WC_COMMITS_AHEAD_MASTER
+      ERROR_QUIET
       OUTPUT_STRIP_TRAILING_WHITESPACE)
 
   # defines DOLPHIN_WC_TAG
@@ -43,6 +46,11 @@ if(NOT DOLPHIN_WC_REVISION)
   set(DOLPHIN_WC_DESCRIBE "${DOLPHIN_VERSION_MAJOR}.${DOLPHIN_VERSION_MINOR}")
   set(DOLPHIN_WC_REVISION "${DOLPHIN_WC_DESCRIBE} (no further info)")
   set(DOLPHIN_WC_BRANCH "master")
+  set(DOLPHIN_WC_COMMITS_AHEAD_MASTER 0)
+endif()
+
+# The rev-list above also fails (quietly now) on a 'main'-only clone.
+if(NOT DOLPHIN_WC_COMMITS_AHEAD_MASTER)
   set(DOLPHIN_WC_COMMITS_AHEAD_MASTER 0)
 endif()
 

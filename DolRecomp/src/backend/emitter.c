@@ -8,7 +8,27 @@ static void emit_exc_check_return(FILE* out, const char* indent);
 
 #include <stdlib.h>
 #include <string.h>
+
+/* MSVC's C mode does not implement C11 atomics: <stdatomic.h> fails with
+ * C1189 "C atomic support is not enabled" even under /std:c11 or /std:c17
+ * (documented: there is no atomic support for C; <stdatomic.h> is only
+ * supported when compiling as C++). Use the Win32 Interlocked intrinsics
+ * under _MSC_VER -- the same pattern cpu.c uses for ppc_memory_fence() --
+ * and C11 atomics everywhere else. _InterlockedExchangeAdd64 is available
+ * on every x64 MSVC, which is the only MSVC target this project builds. */
+#if defined(_MSC_VER)
+#include <intrin.h>
+typedef volatile __int64 dr_stat_ctr;
+#define DR_STAT_LOAD(p) ((unsigned long long)_InterlockedCompareExchange64((p), 0, 0))
+#define DR_STAT_INC(p)  ((void)_InterlockedExchangeAdd64((p), 1))
+#define DR_THREAD_LOCAL __declspec(thread)
+#else
 #include <stdatomic.h>
+typedef _Atomic unsigned long long dr_stat_ctr;
+#define DR_STAT_LOAD(p) atomic_load(p)
+#define DR_STAT_INC(p)  ((void)atomic_fetch_add((p), 1ull))
+#define DR_THREAD_LOCAL _Thread_local
+#endif
 
 /* --ca-liveness: XER[CA] dead-write analysis. Reporting only for now -- see
  * compute_ca_live(). emit_function() runs on the -jN workers, so the counters
@@ -34,13 +54,13 @@ static bool s_ca_liveness = false;
  * a CORRECT version is worth less than that. Kept behind a flag because the
  * wiring is done and the analysis is here if anyone fixes it. */
 static bool s_ca_elide = false;
-/* Verdict for the site currently being emitted. _Thread_local because
+/* Verdict for the site currently being emitted. Thread-local because
    emit_function() runs on the -jN workers -- a plain file-static would be a
    data race across chunks, the trap record_entry() documents. */
-static _Thread_local int s_ca_dead_here = 0;
-static _Atomic unsigned long long s_ca_defs;
-static _Atomic unsigned long long s_ca_dead;
-static _Atomic unsigned long long s_ca_uses;
+static DR_THREAD_LOCAL int s_ca_dead_here = 0;
+static dr_stat_ctr s_ca_defs;
+static dr_stat_ctr s_ca_dead;
+static dr_stat_ctr s_ca_uses;
 
 void emit_set_ca_liveness(bool enable) { s_ca_liveness = enable; }
 void emit_set_ca_elide(bool enable) { s_ca_elide = enable; }
@@ -49,9 +69,9 @@ void emit_report_ca_stats(void) {
     unsigned long long defs, dead, uses;
     if (!s_ca_liveness)
         return;
-    defs = atomic_load(&s_ca_defs);
-    dead = atomic_load(&s_ca_dead);
-    uses = atomic_load(&s_ca_uses);
+    defs = DR_STAT_LOAD(&s_ca_defs);
+    dead = DR_STAT_LOAD(&s_ca_dead);
+    uses = DR_STAT_LOAD(&s_ca_uses);
     printf("  XER[CA]: %llu write sites, %llu read sites, %llu provably dead"
            " (%.1f%% of writes)\n",
            defs, uses, dead,
@@ -520,7 +540,7 @@ static bool must_reach_dispatcher(u32 pc) {
 /* Thread-local: codegen.c emits chunks on N worker threads (-jN), so a plain
  * file-static is shared between them and one chunk's value lands in another's
  * output. That produced refunds of 1 and 7 cycles inside a 367-cycle block. */
-static _Thread_local u32 s_block_suffix = 0;
+static DR_THREAD_LOCAL u32 s_block_suffix = 0;
 
 /* `if (ctx->exception) return;` plus the refund. */
 static void emit_exc_check_return(FILE* out, const char* indent) {
@@ -2591,11 +2611,11 @@ void emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
                 if (insts[i].embedded_data)
                     continue;
                 if (inst_uses_ca(&insts[i]))
-                    atomic_fetch_add(&s_ca_uses, 1ull);
+                    DR_STAT_INC(&s_ca_uses);
                 if (inst_defs_ca(&insts[i])) {
-                    atomic_fetch_add(&s_ca_defs, 1ull);
+                    DR_STAT_INC(&s_ca_defs);
                     if (!ca_live[i])
-                        atomic_fetch_add(&s_ca_dead, 1ull);
+                        DR_STAT_INC(&s_ca_dead);
                 }
             }
         }

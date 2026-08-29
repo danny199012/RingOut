@@ -7,12 +7,13 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # Portable warnings for local development and CI.
 if(MSVC)
     add_compile_options(/W3)
-    # MSVC only enables C11 <stdatomic.h> (_Atomic) under /std:c11. DolRecomp's
-    # backend (emitter.c, dispatch.c, codegen.c) uses it; without the flag the
-    # build fails with vcruntime_c11_stdatomic.h C1189 "C atomic support is not
-    # enabled" when this tree is built as a subdirectory of ModernGekko (the
-    # parent's -DCMAKE_C_FLAGS does not reliably reach subdirectory targets in
-    # the Visual Studio generator).
+    # MSVC only enables C11 <stdatomic.h> (_Atomic) when compiling as C++ --
+    # in C mode it fails with vcruntime_c11_stdatomic.h C1189 "C atomic support
+    # is not enabled" even under /std:c11 (documented: no atomics for C). The
+    # backend therefore uses Interlocked intrinsics under _MSC_VER (see
+    # emitter.c, and cpu.c's ppc_memory_fence). /std:c11 is still wanted for
+    # the remaining C11 constructs, and the parent's -DCMAKE_C_FLAGS does not
+    # reliably reach subdirectory targets in the Visual Studio generator.
     add_compile_options(/std:c11)
 else()
     add_compile_options(-Wall -Wextra -Wno-unused-parameter)
