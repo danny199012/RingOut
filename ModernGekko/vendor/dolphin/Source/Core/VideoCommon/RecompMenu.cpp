@@ -27,6 +27,7 @@
 #include <cmath>
 #include <fstream>
 
+#include "AudioCommon/AudioCommon.h"
 #include "Common/Config/Config.h"
 #include "Core/NetPlay/NetPlayProto.h"
 #include "Common/FileUtil.h"
@@ -1574,6 +1575,10 @@ bool AdjustItem(Item item, int direction, State& state)
     break;
   case Item::Muted:
     Config::SetBase(Config::MAIN_AUDIO_MUTED, !Config::Get(Config::MAIN_AUDIO_MUTED));
+    // SetBase alone only stores the value: the running sound stream re-reads
+    // volume/mute when UpdateSoundStream pushes them, so the toggle used to
+    // take effect only after a restart. Apply it live.
+    AudioCommon::UpdateSoundStream(Core::System::GetInstance());
     break;
   case Item::AudioLatency:
     Config::SetBase(Config::MAIN_AUDIO_LATENCY,
@@ -1586,6 +1591,9 @@ bool AdjustItem(Item item, int direction, State& state)
   {
     const int volume = std::clamp(Config::Get(Config::MAIN_AUDIO_VOLUME) + direction * 5, 0, 100);
     Config::SetBase(Config::MAIN_AUDIO_VOLUME, volume);
+    // Same live-apply as Mute above: push to the running stream now instead of
+    // waiting for the next launch.
+    AudioCommon::UpdateSoundStream(Core::System::GetInstance());
     break;
   }
   case Item::Speed:
