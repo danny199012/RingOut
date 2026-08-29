@@ -805,6 +805,7 @@ int main(int argc, char **argv) {
                                         current_metadata.metadata->dol_sha256);
   const auto &resolutions = moderngekko::frontend::SupportedResolutions();
   bool show_fps_in_title = config.show_fps_in_title;
+  bool dual_core = config.dual_core;
   std::array<char, 31> netplay_nickname{};
   std::array<char, 256> netplay_address{};
   std::array<char, 16> netplay_room_code{};
@@ -1609,6 +1610,104 @@ int main(int argc, char **argv) {
           dialog.error = std::move(error);
         }
       }
+      ImGui::TextUnformatted("Graphics backend");
+      ImGui::SetNextItemWidth(260.0f * scale);
+      {
+        static constexpr std::array<const char *, 4> kGfxLabels = {
+            "Auto (default)", "Direct3D 11", "Direct3D 12", "Vulkan"};
+        static constexpr std::array<const char *, 4> kGfxValues = {
+            "", "D3D", "D3D12", "Vulkan"};
+        int gfx_index = 0;
+        for (std::size_t i = 0; i < kGfxValues.size(); ++i)
+          if (config.graphics_backend == kGfxValues[i])
+            gfx_index = static_cast<int>(i);
+        if (ImGui::BeginCombo("##graphics-backend", kGfxLabels[gfx_index])) {
+          for (std::size_t i = 0; i < kGfxLabels.size(); ++i) {
+            const bool selected = gfx_index == static_cast<int>(i);
+            if (ImGui::Selectable(kGfxLabels[i], selected)) {
+              auto updated = moderngekko::frontend::LoadConfig(user_directory,
+                                                               false);
+              if (!updated)
+                updated = config;
+              updated.graphics_backend = kGfxValues[i];
+              std::string error;
+              if (moderngekko::frontend::SaveConfig(user_directory, updated,
+                                                    &error))
+                config = updated;
+              else {
+                std::lock_guard lock(dialog.mutex);
+                dialog.error = std::move(error);
+              }
+            }
+            if (selected)
+              ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndCombo();
+        }
+      }
+      ImGui::TextDisabled("Applies on next launch. Vulkan has driver issues on\n"
+                          "some newer GPUs; Direct3D 12 is the safer pick there.");
+      ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
+      ContentSeparator(content_width, scale);
+      ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
+      ImGui::TextUnformatted("Audio");
+      ImGui::TextUnformatted("Audio backend");
+      ImGui::SetNextItemWidth(260.0f * scale);
+      {
+        static constexpr std::array<const char *, 5> kAudioLabels = {
+            "Auto (recommended)", "Cubeb", "WASAPI (Exclusive Mode)", "OpenAL",
+            "No Audio Output"};
+        static constexpr std::array<const char *, 5> kAudioValues = {
+            "", "Cubeb", "WASAPI (Exclusive Mode)", "OpenAL",
+            "No Audio Output"};
+        int audio_index = 0;
+        for (std::size_t i = 0; i < kAudioValues.size(); ++i)
+          if (config.audio_backend == kAudioValues[i])
+            audio_index = static_cast<int>(i);
+        if (ImGui::BeginCombo("##audio-backend", kAudioLabels[audio_index])) {
+          for (std::size_t i = 0; i < kAudioLabels.size(); ++i) {
+            const bool selected = audio_index == static_cast<int>(i);
+            if (ImGui::Selectable(kAudioLabels[i], selected)) {
+              auto updated = moderngekko::frontend::LoadConfig(user_directory,
+                                                               false);
+              if (!updated)
+                updated = config;
+              updated.audio_backend = kAudioValues[i];
+              std::string error;
+              if (moderngekko::frontend::SaveConfig(user_directory, updated,
+                                                    &error))
+                config = updated;
+              else {
+                std::lock_guard lock(dialog.mutex);
+                dialog.error = std::move(error);
+              }
+            }
+            if (selected)
+              ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndCombo();
+        }
+      }
+      ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
+      if (ImGui::Checkbox("Dual core (experimental)", &dual_core)) {
+        auto updated =
+            moderngekko::frontend::LoadConfig(user_directory, false);
+        if (!updated)
+          updated = config;
+        updated.dual_core = dual_core;
+        std::string error;
+        if (moderngekko::frontend::SaveConfig(user_directory, updated, &error))
+          config = updated;
+        else {
+          dual_core = !dual_core;
+          std::lock_guard lock(dialog.mutex);
+          dialog.error = std::move(error);
+        }
+      }
+      ImGui::TextDisabled(
+          "Splits CPU and GPU work across two threads; can raise fps on\n"
+          "multi-core PCs. Rarely, a GFX FIFO desync alert can appear --\n"
+          "turn it back off if you see one. Netplay ignores this setting.");
       ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));
       ContentSeparator(content_width, scale);
       ImGui::Dummy(ImVec2(0.0f, 10.0f * scale));

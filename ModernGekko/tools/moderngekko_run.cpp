@@ -33,6 +33,8 @@ void Usage() {
                " [--game <extracted-root>] [--module <path>]\n"
                "       [--user-dir <path>] [--title <text>]\n"
                "       [--graphics <backend>] [--audio <backend>]\n"
+               "       [--dual-core]           (experimental: split CPU/GPU\n"
+               " threads; offline only)\n"
                "       [--wayland] [-X11] [--headless] [--allow-interpreter]\n"
                "       [--widescreen]   (16:9; also Alt+W in-game)\n"
                "       [--netplay-host | --netplay-join <host>] "
@@ -151,6 +153,16 @@ int RunMain(int argc, char **argv) {
       config.window_system = moderngekko::WindowSystem::Wayland;
     else if (arg == "--widescreen")
       config.graphics.widescreen = true;
+    else if (arg == "--dual-core") {
+      // Same switch as RINGOUT_DUAL_CORE=1, exposed as a flag so frontends do
+      // not have to reach into the child environment. Offline only: the
+      // determinism/netplay path ignores RINGOUT_DUAL_CORE.
+#ifdef _WIN32
+      _putenv("RINGOUT_DUAL_CORE=1");
+#else
+      setenv("RINGOUT_DUAL_CORE", "1", 1);
+#endif
+    }
     else if (arg == "--headless")
       config.headless = true;
     else if (arg == "--allow-interpreter")
@@ -275,6 +287,19 @@ int RunMain(int argc, char **argv) {
   }
   config.graphics.internal_resolution_scale = frontend_config.dolphin_scale;
   config.show_fps_in_title = frontend_config.show_fps_in_title;
+  // config.ini is the source of truth for launcher-edited settings; the
+  // command-line flags above still win when passed explicitly.
+  if (config.graphics.backend.empty())
+    config.graphics.backend = frontend_config.graphics_backend;
+  if (config.audio.backend.empty())
+    config.audio.backend = frontend_config.audio_backend;
+  if (frontend_config.dual_core) {
+#ifdef _WIN32
+    _putenv("RINGOUT_DUAL_CORE=1");
+#else
+    setenv("RINGOUT_DUAL_CORE", "1", 1);
+#endif
+  }
 
   // --keyboard rewrites the pad profile, so it overrides an existing one; the
   // implicit default below only ever fills in a missing profile. Layout 2 is a

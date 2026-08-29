@@ -37,6 +37,15 @@ struct ConfigResult {
   std::string controller;
   std::vector<std::string> controllers;
   bool show_fps_in_title = true;
+  // Empty means "auto": the runtime picks its platform default. The runner
+  // reads these from config.ini itself (command-line flags still win), so both
+  // the launcher UI and plain text edits take effect -- unlike Dolphin.ini,
+  // which the runtime rewrites with the effective config on save.
+  std::string graphics_backend;
+  std::string audio_backend;
+  // Experimental: split CPU/GPU onto two threads. Ignored by netplay, which
+  // keeps its own deterministic threading.
+  bool dual_core = false;
   std::string netplay_nickname = "Player";
   std::string netplay_address = "127.0.0.1";
   std::uint16_t netplay_port = 2626;

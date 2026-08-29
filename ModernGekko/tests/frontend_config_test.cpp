@@ -23,7 +23,9 @@ int main() {
 
   const auto loaded = moderngekko::frontend::LoadConfig(directory, false);
   if (!loaded || loaded.dolphin_scale != 3 || loaded.show_fps_in_title ||
-      loaded.controller != controller || !loaded.netplay_performance_overlay) {
+      loaded.controller != controller || !loaded.netplay_performance_overlay ||
+      !loaded.graphics_backend.empty() || !loaded.audio_backend.empty() ||
+      loaded.dual_core) {
     return 2;
   }
 
@@ -38,6 +40,9 @@ int main() {
       moderngekko::frontend::NetplayMode::Rollback;
   netplay_config.netplay_performance_overlay = false;
   netplay_config.netplay_diagnostic_logging = true;
+  netplay_config.graphics_backend = "D3D12";
+  netplay_config.audio_backend = "WASAPI (Exclusive Mode)";
+  netplay_config.dual_core = true;
   if (!moderngekko::frontend::SaveConfig(directory, netplay_config, &error))
     return 6;
   const auto netplay_loaded =
@@ -50,6 +55,9 @@ int main() {
       netplay_loaded.netplay_buffer != "auto" ||
       netplay_loaded.netplay_performance_overlay ||
       !netplay_loaded.netplay_diagnostic_logging ||
+      netplay_loaded.graphics_backend != "D3D12" ||
+      netplay_loaded.audio_backend != "WASAPI (Exclusive Mode)" ||
+      !netplay_loaded.dual_core ||
       netplay_loaded.netplay_mode !=
           moderngekko::frontend::NetplayMode::Rollback) {
     return 7;

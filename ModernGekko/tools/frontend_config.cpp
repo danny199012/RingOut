@@ -146,6 +146,18 @@ ConfigResult LoadConfig(const fs::path &user_directory,
         config.show_fps_in_title = false;
       else
         return {.error = "show_fps_in_title must be true or false"};
+    } else if (key == "graphics_backend")
+      config.graphics_backend = raw_value;
+    else if (key == "audio_backend")
+      config.audio_backend = raw_value;
+    else if (key == "dual_core") {
+      if (value == "true" || value == "1" || value == "yes" || value == "on")
+        config.dual_core = true;
+      else if (value == "false" || value == "0" || value == "no" ||
+               value == "off")
+        config.dual_core = false;
+      else
+        return {.error = "dual_core must be true or false"};
     } else if (key == "nickname")
       config.netplay_nickname = raw_value;
     else if (key == "address")
@@ -277,6 +289,11 @@ bool SaveConfig(const fs::path &user_directory, const ConfigResult &config,
        << config.resolution << '\n'
        << "show_fps_in_title=" << (config.show_fps_in_title ? "true" : "false")
        << '\n'
+       << "graphics_backend=" << config.graphics_backend << '\n'
+       << "[Audio]\n"
+       << "audio_backend=" << config.audio_backend << '\n'
+       << "[Emulation]\n"
+       << "dual_core=" << (config.dual_core ? "true" : "false") << '\n'
        << "[Input]\n";
   for (std::size_t i = 0; i < config.controllers.size() && i < 4; ++i) {
     if (config.controllers[i].find_first_of("\r\n") != std::string::npos) {
