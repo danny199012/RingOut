@@ -570,8 +570,8 @@ def cmake_build(build: Path, target: str, tools: ToolSet, jobs: int):
 # ---------------------------------------------------------------------------
 
 def build_moderngekko(repo: Path, build_root: Path, tools: ToolSet,
-                      rebuild: bool, jobs: int) -> Path:
-    step("Building ModernGekko runtime (moderngekko-run.exe)")
+                      rebuild: bool, jobs: int) -> tuple[Path, Path, Path]:
+    step("Building ModernGekko runtime + launcher + port tool")
     src   = repo / "ModernGekko"
     build = build_root / "moderngekko-build"
 
@@ -615,24 +615,30 @@ def build_moderngekko(repo: Path, build_root: Path, tools: ToolSet,
             "are missing). Install Visual Studio Build Tools and re-run.\n"
             "  https://visualstudio.microsoft.com/downloads/")
     cmake_build(build, "moderngekko-run", tools, jobs)
+    cmake_build(build, "moderngekko-launcher", tools, jobs)
+    cmake_build(build, "moderngekko-port", tools, jobs)
 
-    # Locate the produced binary
-    exe = None
-    for candidate in [build / "moderngekko-run.exe",
-                      build / "Source" / "Core" / "moderngekko-run.exe",
-                      build / "Binaries" / "moderngekko-run.exe"]:
-        if candidate.exists():
-            exe = candidate
-            break
-    if exe is None:
-        hits = list(build.rglob("moderngekko-run.exe"))
+    # Locate the produced binaries (VS generator places them in Release/).
+    def _find(build_dir: Path, name: str) -> Path:
+        for candidate in [build_dir / "Release" / name,
+                          build_dir / name,
+                          build_dir / "Source" / "Core" / name,
+                          build_dir / "Binaries" / name]:
+            if candidate.exists():
+                return candidate
+        hits = list(build_dir.rglob(name))
         if hits:
-            exe = hits[0]
-        else:
-            die("moderngekko-run.exe not found after build")
+            return hits[0]
+        die(f"{name} not found after build")
 
-    ok(f"Runtime built: {exe}")
-    return exe
+    runtime_exe   = _find(build, "moderngekko-run.exe")
+    launcher_exe  = _find(build, "RingOut.exe")   # OUTPUT_NAME is RingOut
+    port_exe      = _find(build, "moderngekko-port.exe")
+
+    ok(f"Runtime built:    {runtime_exe}")
+    ok(f"Launcher built:   {launcher_exe}  (the C++ GUI launcher)")
+    ok(f"Port tool built:  {port_exe}")
+    return runtime_exe, launcher_exe, port_exe
 
 # ---------------------------------------------------------------------------
 # Stage 2 - DolRecomp recompiler
@@ -666,28 +672,74 @@ def build_dolrecomp(repo: Path, build_root: Path, tools: ToolSet,
 
 
 def build_launcher(repo: Path, build_root: Path, tools: ToolSet):
-    step("Building RingOut.exe launcher")
-    src_c = (repo / "attic" / "windows" / "dist" /
-             "RingOut-1.0-dist-windows" / "launcher" / "RingOut.c")
-    if not src_c.exists():
-        warn(f"Launcher source not found at {src_c}. Skipping RingOut.exe.")
+    # The C++ GUI launcher (moderngekko-launcher) is built by
+    # build_moderngekko() as part of the same CMake configure, and its output
+    # is named RingOut.exe there. Nothing extra needs to be compiled here.
+    step("C++ launcher built with the runtime (RingOut.exe)")
+    build = build_root / "moderngekko-build"
+    exe = None
+    for candidate in [build / "Release" / "RingOut.exe", build / "RingOut.exe"]:
+        if candidate.exists():
+            exe = candidate
+            break
+    if exe is None:
+        hits = list(build.rglob("RingOut.exe"))
+        if hits:
+            exe = hits[0]
+    if exe is None:
+        warn("RingOut.exe not found in moderngekko-build")
         return None
-
-    out_exe = build_root / "RingOut.exe"
-    env = tools.env()
-    # Build flags match the comment in RingOut.c:
-    #   clang RingOut.c -o RingOut.exe -municode -O2 -lcomdlg32
-    cmd = [tools.clang, str(src_c), "-o", str(out_exe),
-           "-municode", "-O2", "-lcomdlg32"]
-    run(cmd, env=env)
-    if not out_exe.exists():
-        die("RingOut.exe was not produced by the launcher build.")
-    ok(f"Launcher built: {out_exe}")
-    return out_exe
+    ok(f"Launcher: {exe}")
+    return exe
 
 # ---------------------------------------------------------------------------
 # Stage 4 - Assemble the output package
 # ---------------------------------------------------------------------------
+
+# Windows system DLLs that must never be bundled (they come from the OS). Mirrors
+# the allowlist the official package script uses for import resolution.
+_WINDOWS_SYSTEM_DLLS = {
+    "advapi32.dll", "avrt.dll", "bcrypt.dll", "cfgmgr32.dll", "comctl32.dll",
+    "comdlg32.dll", "crypt32.dll", "cryptui.dll", "d3d11.dll", "d3d12.dll",
+    "d3dcompiler_47.dll", "dbghelp.dll", "dnsapi.dll", "dwmapi.dll",
+    "dxgi.dll", "gdi32.dll", "hid.dll", "imm32.dll", "iphlpapi.dll",
+    "kernel32.dll", "ksuser.dll", "mf.dll", "mfplat.dll", "mfreadwrite.dll",
+    "mfuuid.dll", "mmdevapi.dll", "mpr.dll", "msvcrt.dll", "netapi32.dll",
+    "normaliz.dll", "ntdll.dll", "ole32.dll", "oleacc.dll", "oleaut32.dll",
+    "opengl32.dll", "powrprof.dll", "propsys.dll", "psapi.dll", "qwave.dll",
+    "rpcrt4.dll", "secur32.dll", "setupapi.dll", "shcore.dll", "shell32.dll",
+    "shlwapi.dll", "strmiids.dll", "ucrtbase.dll", "user32.dll", "userenv.dll",
+    "usp10.dll", "uxtheme.dll", "version.dll", "vulkan-1.dll", "winhttp.dll",
+    "wininet.dll", "winmm.dll", "winspool.drv", "wintrust.dll", "ws2_32.dll",
+    "wtsapi32.dll",
+}
+
+
+def _copy_runtime_dlls(out_dir: Path, subdir: str, exe):
+    """Copy non-system DLLs that sit next to a freshly built exe into the
+    package location for that executable. This approximates the official
+    release's PE-import resolution without needing objdump: for this project
+    every non-system DLL the exes need is produced as a sibling in the build
+    output directory (or an SDK bin/ dir like the MSVC runtime DLLs)."""
+    if not exe or not Path(exe).exists():
+        return
+    src_dir = Path(exe).parent
+    if not src_dir.is_dir():
+        return
+    dest = out_dir / subdir
+    ensure_dir(dest)
+    copied = 0
+    for dll in sorted(src_dir.glob("*.dll")):
+        if dll.name.lower() in _WINDOWS_SYSTEM_DLLS:
+            continue
+        try:
+            shutil.copy2(dll, dest / dll.name)
+            copied += 1
+        except OSError:
+            pass
+    if copied:
+        ok(f"Copied {copied} runtime DLL(s) to {subdir or '.'}/")
+
 
 def assemble_package(
     repo:        Path,
@@ -695,18 +747,22 @@ def assemble_package(
     runtime_exe: Path,
     dolrecomp_exe: Path,
     launcher_exe,
+    port_exe,
+    build_root:  Path,
     tools:       ToolSet,
 ):
     step("Assembling Windows package")
     windows_dist = (repo / "attic" / "windows" / "dist" /
                     "RingOut-1.0-dist-windows")
 
-    # Directory layout expected by setup.ps1 / RingOut.exe:
+    # Directory layout matching the official ell release:
     #   <out_dir>/
-    #     RingOut.exe          native launcher (double-click to play)
+    #     RingOut.exe          C++ GUI launcher (double-click to play)
     #     setup.ps1            recompiles a disc image on this machine
     #     bin/  moderngekko-run.exe
-    #     tools/ dolrecomp.exe
+    #     bin/Sys/             Dolphin DSP/fonts/config resources (required)
+    #     fonts/ art/          launcher fonts + character art
+    #     tools/ dolrecomp.exe, moderngekko-port.exe
     #     module-src/  build recipe + DolRecomp headers
     #     shaders/     bundled post-processing filters
     #     userdata/GameSettings/GRSEAF.ini  cheat codes
@@ -714,6 +770,8 @@ def assemble_package(
 
     ensure_dir(out_dir / "bin")
     ensure_dir(out_dir / "tools")
+    ensure_dir(out_dir / "fonts")
+    ensure_dir(out_dir / "art")
     ensure_dir(out_dir / "userdata" / "GameSettings")
     tc = out_dir / "toolchain"
     ensure_dir(tc / "bin")
@@ -723,6 +781,9 @@ def assemble_package(
     shutil.copy2(runtime_exe,   out_dir / "bin" / "moderngekko-run.exe")
     dolrecomp_dst = out_dir / "tools" / "dolrecomp.exe"
     shutil.copy2(dolrecomp_exe, dolrecomp_dst)
+    if port_exe and Path(port_exe).exists():
+        shutil.copy2(port_exe, out_dir / "tools" / "moderngekko-port.exe")
+        ok("Copied moderngekko-port.exe")
 
     # dolrecomp imports libwinpthread-1.dll (pthread_create/join/mutex_*).
     # Windows DLL search order checks the executable's directory first; without
@@ -737,10 +798,37 @@ def assemble_package(
 
     ok("Copied binaries.")
 
-    # --- launcher ---
+    # --- bin/Sys: Dolphin resources (DSP, fonts, config). CMake's POST_BUILD
+    # copied Data/Sys next to moderngekko-run.exe; stage it as bin/Sys.
+    sys_src = Path(runtime_exe).parent / "Sys"
+    if sys_src.is_dir():
+        shutil.copytree(sys_src, out_dir / "bin" / "Sys", dirs_exist_ok=True)
+        ok("Copied bin/Sys (Dolphin resources).")
+    else:
+        warn(f"bin/Sys not found next to runtime ({sys_src}) - runtime may "
+             "fail to find DSP/fonts/config.")
+
+    # --- auto-copy runtime DLLs needed by the built executables ---
+    # The official release resolves each PE's imports and ships the non-system
+    # DLLs. Approximate that by copying any non-system DLL that sits next to
+    # the freshly built executables into the same relative package location.
+    _copy_runtime_dlls(out_dir, "bin",     runtime_exe)
+    _copy_runtime_dlls(out_dir, "tools",   dolrecomp_exe)
+    _copy_runtime_dlls(out_dir, "tools",   port_exe)
+    _copy_runtime_dlls(out_dir, "",        launcher_exe)
+
+    # --- launcher + its fonts/art payload ---
     if launcher_exe and Path(launcher_exe).exists():
         shutil.copy2(launcher_exe, out_dir / "RingOut.exe")
         ok("Copied RingOut.exe")
+        # CMake's POST_BUILD copied fonts/ and art/ next to the launcher exe.
+        for sub in ("fonts", "art"):
+            src = Path(launcher_exe).parent / sub
+            if src.is_dir():
+                shutil.copytree(src, out_dir / sub, dirs_exist_ok=True)
+                ok(f"Copied {sub}/")
+            else:
+                warn(f"{sub}/ not found next to launcher ({src}).")
     else:
         cmd_text = (
             "@echo off\r\n"
@@ -1021,14 +1109,15 @@ def main():
     clone_or_update_repo(repo_dir, tools)
 
     # --- builds ---
-    runtime_exe   = build_moderngekko(repo_dir, build_root, tools, args.rebuild, args.jobs)
+    runtime_exe, launcher_exe, port_exe = \
+        build_moderngekko(repo_dir, build_root, tools, args.rebuild, args.jobs)
     dolrecomp_exe = build_dolrecomp(repo_dir, build_root, tools, args.rebuild, args.jobs)
-    launcher_exe  = None
-    if not args.no_launcher:
-        launcher_exe = build_launcher(repo_dir, build_root, tools)
+    if args.no_launcher:
+        launcher_exe = None
 
     # --- assemble ---
-    assemble_package(repo_dir, out_dir, runtime_exe, dolrecomp_exe, launcher_exe, tools)
+    assemble_package(repo_dir, out_dir, runtime_exe, dolrecomp_exe,
+                     launcher_exe, port_exe, build_root, tools)
 
     # --- optional disc setup ---
     if args.iso:
