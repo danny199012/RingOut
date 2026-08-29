@@ -670,6 +670,31 @@ the match (`ModernGekko/tools/netplay_session.cpp:817-823`;
 memory. They do not promise that every unlock becomes permanent memory-card
 progress after the code is disabled (`README.md:159-163`).
 
+## Window icons (title bar and task bar)
+
+The title-bar and task-bar icon for **both** windows come from one source: the
+icon resource group embedded in each `.exe`.
+
+- **Game window** (`bin/moderngekko-run.exe`): DolphinNoGUI's
+  `PlatformWin32::RegisterRenderWindowClass` loads resource group `101`
+  (`IDI_ICON1`) as the window class icon. Prior to this change it called
+  `LoadIcon(nullptr, IDI_ICON1)`; a `nullptr` instance makes Windows treat `101`
+  as a system-icon ordinal (system icons start at 32512), so both `hIcon` and
+  `hIconSm` came back `NULL` and Windows drew a generic blank icon.
+- **Launcher window** (`RingOut.exe`): SDL3's `SDL_RegisterApp` uses the
+  `SDL_WINDOWS_INTRESOURCE_ICON` hint (set to `"101"` before `SDL_Init`) so the
+  window class icon is the same group.
+
+The icon asset is `ModernGekko/assets/ringout.ico` (multi-resolution 16–256,
+regenerable from the launcher character art with
+`python3 tools/make_ringout_icon.py`). `ModernGekko/assets/ringout.rc` maps it
+to group `101` and is added to both `moderngekko-run` and `moderngekko-launcher`
+on `WIN32` (`ModernGekko/CMakeLists.txt`). To change the icon, replace
+`ringout.ico` and rebuild; no code edits are needed.
+
+This is a **source/build change, not yet in a shipped ZIP** — it requires a
+rebuild of the release for the icon to appear.
+
 ## Troubleshooting by symptom
 
 | Symptom | Meaning / action |
@@ -685,7 +710,7 @@ progress after the code is disabled (`README.md:159-163`).
 | `using existing controller profile`, but no input | Inspect `GCPadNew.ini`, the Controls device row, and `[input]` logs; back up/rename the stale profile to regenerate. |
 | Escape exits instead of opening settings | In the netplay lobby that is intentional cancellation. In the game window, plain Escape should open settings; Shift+Escape quits. Record which window had focus. |
 | `module lacks ppc_set_gather_pipe export` | Stale module/runtime pairing. Build the module in a fresh directory from the same current ZIP. |
-| ~30 fps cap (or a black screen) on Vulkan while Direct3D is fine | Player-measured on an RTX 5070 Ti, 2026-08-29: it is the **vsync × Vulkan** interaction, not Vulkan alone — Vulkan + vsync (in-menu *or* driver-forced via the NVIDIA app) locks to half rate, Vulkan + vsync-off is full speed, and D3D12 is unaffected either way. Update the GPU driver first; prefer the D3D backends on affected systems. Note the MinGW release packages default to Vulkan, and the NVIDIA app's global vsync override counts as "vsync on". |
+| ~30 fps cap (or a black screen) on Vulkan while Direct3D is fine | Player-measured on an RTX 5070 Ti, 2026-08-29: it is the **vsync × Vulkan** interaction, not Vulkan alone — Vulkan + vsync (in-menu *or* driver-forced via the NVIDIA app) locks to half rate, Vulkan + vsync-off is full speed, and D3D12 is unaffected either way. Update the GPU driver first. **On the shipped MinGW release, D3D is not compiled** — `VideoBackends/CMakeLists.txt` gates D3DCommon/D3D/D3D12 behind `if(WIN32 AND NOT MINGW)` and CI cross-builds with `x86_64-w64-mingw32`, so the launcher's "Direct3D 11"/"Direct3D 12" entries select nothing (`ActivateBackend` finds no D3D config name and silently keeps the default). The fix on the release package is therefore **turn VSync off** (in-game Escape → Video → VSync) **and** clear any vsync override for the exe in the NVIDIA app; the NVIDIA app's global vsync override counts as "vsync on". |
 | FMVs dip below full speed while gameplay holds 60 | The shipped PGO profile is trained on gameplay, so the guest MPEG decoder is cold-marked and penalised (measured 2026-08-29: FMV floor ~81% speed with PGO vs ~90% without). Workaround: rename `module-src\module.profdata`, delete the game's folder under `%LOCALAPPDATA%\ringout\Builds\<GAMEID>`, and Play to rebuild without PGO. A regenerated FMV-inclusive profile is the pending fix. Do NOT use `STATICRECOMP_FMV_TAKEOVER` for speed — measured slower on both dev and player machines. |
 | Missing DLL on launch | Compare against `MANIFEST.sha256` and check AV quarantine; package construction already rejects unresolved non-system imports. |
 
