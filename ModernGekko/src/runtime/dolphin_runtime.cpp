@@ -29,7 +29,6 @@
 #include "VideoCommon/RecompMenu.h"
 #include "VideoCommon/VideoConfig.h"
 #include "dolphin_runtime_internal.hpp"
-#include "frontend_config.hpp"
 #include "moderngekko/cpu_state.h"
 #include "moderngekko/module_loader.hpp"
 
@@ -40,10 +39,13 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <fmt/format.h>
 #include <mutex>
 #include <optional>
 #include <ranges>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -295,6 +297,55 @@ std::unique_ptr<Platform> CreateHostPlatform(const RuntimeConfig &config) {
   return nullptr;
 }
 
+// Reads the highest GameCube pad port (1-4) with a non-empty Device line from
+// GCPadNew.ini. Dolphin's SI ports 2-4 default to SIDEVICE_NONE, so a second
+// pad profile is electrically dead unless the matching port is enabled here.
+// Implemented locally in the runtime rather than via the frontend config layer
+// so this translation unit needs neither a tools/ include path nor a link
+// dependency on the frontend library.
+namespace {
+int CountConfiguredGCPadPorts(const std::filesystem::path &user_directory) {
+  std::ifstream input(user_directory / "Config" / "GCPadNew.ini");
+  if (!input)
+    return 0;
+  int section = 0;  // 1-based port inside a [GCPadN] section; 0 = none yet
+  int configured = 0;
+  std::string line;
+  while (std::getline(input, line)) {
+    if (!line.empty() && line.back() == '\r')
+      line.pop_back();
+    const auto trim_ws = [&](std::string_view text) {
+      const auto start = text.find_first_not_of(" \t");
+      const auto end = text.find_last_not_of(" \t");
+      if (start == std::string_view::npos)
+        return std::string_view{};
+      return text.substr(start, end - start + 1);
+    };
+    const std::string_view trimmed = trim_ws(line);
+    if (trimmed.starts_with('[') && trimmed.ends_with(']')) {
+      section = 0;
+      if (trimmed.size() == 8 && trimmed.starts_with("[GCPad") &&
+          trimmed[6] >= '1' && trimmed[6] <= '4' && trimmed[7] == ']')
+        section = trimmed[6] - '0';
+      continue;
+    }
+    if (section == 0)
+      continue;
+    const auto separator = trimmed.find('=');
+    if (separator == std::string_view::npos)
+      continue;
+    if (trim_ws(trimmed.substr(0, separator)) != "Device")
+      continue;
+    // A non-empty Device inside [GCPadN] means port N is bound. Track the
+    // highest such N (not a contiguous count) so a profile with only
+    // [GCPad1] and [GCPad3] still tells the runtime "port 3 needs enabling".
+    if (!trim_ws(trimmed.substr(separator + 1)).empty() && section > configured)
+      configured = section;
+  }
+  return configured;
+}
+} // namespace
+
 void ApplyCoreSettings(const GameMetadata &metadata,
                         const std::filesystem::path &user_directory) {
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
@@ -351,14 +402,13 @@ void ApplyCoreSettings(const GameMetadata &metadata,
 
   // GameCube controller ports 2-4 default to SIDEVICE_NONE, so a second pad
   // profile is electrically dead unless the matching SI port is enabled here.
-  // GCPadConfiguredPortCount reads GCPadNew.ini and reports the highest port
+  // CountConfiguredGCPadPorts reads GCPadNew.ini and reports the highest port
   // with a non-empty Device. We set SIDevice1..3 to a standard GC controller up
   // to that count; anything beyond stays NONE. This pairs with the frontend's
   // multi-port writer (WriteGamepadGCPadConfigMulti) and also covers a profile
   // the user hand-edited, since the SI enabling is driven by the profile, not
   // by how it was produced. Port 1 is already a GC controller by default.
-  const int configured_ports =
-      moderngekko::frontend::GCPadConfiguredPortCount(user_directory);
+  const int configured_ports = CountConfiguredGCPadPorts(user_directory);
   for (int port = 1; port < 4 && port < configured_ports; ++port) {
     // SetBase, not SetCurrent: this must win over a stale SIDeviceN left in
     // Dolphin.ini by a prior run or a manual edit, or the base default (NONE)
