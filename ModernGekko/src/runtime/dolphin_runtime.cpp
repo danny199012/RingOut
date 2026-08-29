@@ -459,6 +459,11 @@ void ApplyGraphicsSettings(const GraphicsSettings &graphics, bool headless) {
   Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE,
                   ShaderCompilationMode::AsynchronousUberShaders);
   Config::SetBase(Config::GFX_WAIT_FOR_SHADERS_BEFORE_STARTING, true);
+  // Support line, mirroring "audio backend:" below: a hand-edited Dolphin.ini
+  // is overwritten with the effective config when the in-game menu saves, so
+  // the log must show what was actually selected, not what the file said.
+  std::fprintf(stderr, "video backend: %s\n",
+               Config::Get(Config::MAIN_GFX_BACKEND).c_str());
 }
 
 // Resolves audio.backend to something this host actually offers, writing the
