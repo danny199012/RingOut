@@ -233,6 +233,16 @@ endif()
 # clang than the player's is rejected by -fprofile-use, and setup.sh takes
 # whatever compiler it finds. An unusable profile means "build normally", never a
 # failed setup.
+#
+# CAVEAT measured on player hardware 2026-08-29 (Windows, i9-10850K, MSVC
+# runtime): this profile is trained on gameplay only, so clang cold-marks the
+# Sofdec/MPEG FMV decode path and optimises it for size. Same-machine A/B,
+# single-core, same runtime: FMV floor ~81% speed WITH the profile vs ~90%
+# WITHOUT (worst section 47 fps vs 53-55 fps). Gameplay keeps the win above, so
+# the profile stays shipped; the regeneration should train on a window that
+# INCLUDES FMV playback. A player who cares about movies can rebuild with the
+# profile removed -- note the port's Builds/<dol>-<key> cache key does not cover
+# PGO state, so delete the existing build folder to force the rebuild.
 set(MODULE_PGO_PROFILE "" CACHE FILEPATH
     "clang .profdata to compile the chunks with (-fprofile-use); empty disables PGO")
 
