@@ -1,0 +1,18 @@
+// RingOut application icon resource.
+//
+// The numeric ID 101 matches DolphinNoGUI/resource.h's IDI_ICON1
+// (define IDI_ICON1 MAKEINTRESOURCE(101)), which PlatformWin32.cpp passes to
+// LoadIcon for the game window class, and SDL3's Windows intresource icon
+// hint (SDL_HINT_WINDOWS_INTRESOURCE_ICON="101"), which the launcher sets
+// before SDL_Init so the launcher window class picks the same icon.
+//
+// Embedding this resource is what actually makes the icon visible: without an
+// icon group in the binary, LoadIcon(nullptr=system, 101) and SDL3's
+// EnumResourceNames fallback both find nothing and Windows shows the generic
+// blank application icon in the title bar and task bar.
+//
+// Compiler note: this file is referenced directly from CMake for both
+// moderngekko-run and moderngekko-launcher on WIN32, so it must stay free of
+// #include directives that depend on a specific resource compiler's include
+// path. "ringout.ico" is resolved relative to this file's directory.
+101 ICON "ringout.ico"

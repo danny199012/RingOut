@@ -728,6 +728,14 @@ int main(int argc, char **argv) {
 #if defined(__linux__)
   SDL_SetHint(SDL_HINT_VIDEO_DRIVER, use_wayland ? "wayland" : "x11");
 #endif
+#if defined(_WIN32)
+  // Windows window class icon: SDL3's SDL_RegisterApp loads
+  // SDL_WINDOWS_INTRESOURCE_ICON from the exe's resources (embedded by
+  // assets/ringout.rc as group 101) for both the title bar and task bar icon.
+  // Setting the hint must happen before SDL_Init, which registers the class.
+  SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON, "101");
+  SDL_SetHint(SDL_HINT_WINDOWS_INTRESOURCE_ICON_SMALL, "101");
+#endif
   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD))
     return 1;
 

@@ -75,12 +75,18 @@ bool PlatformWin32::RegisterRenderWindowClass()
   wc.cbClsExtra = 0;
   wc.cbWndExtra = 0;
   wc.hInstance = GetModuleHandle(nullptr);
-  wc.hIcon = LoadIcon(nullptr, IDI_ICON1);
+  // The RingOut icon is embedded in this exe as resource group 101 by
+  // ModernGekko/assets/ringout.rc. LoadIcon needs the MODULE instance; with
+  // nullptr it treats 101 as a system-icon ordinal (system icons start at
+  // 32512), finds nothing, and Windows falls back to a generic blank icon in
+  // the title bar and task bar.
+  const HINSTANCE module_instance = GetModuleHandle(nullptr);
+  wc.hIcon = LoadIcon(module_instance, IDI_ICON1);
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
   wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
   wc.lpszMenuName = nullptr;
   wc.lpszClassName = WINDOW_CLASS_NAME;
-  wc.hIconSm = LoadIcon(nullptr, IDI_ICON1);
+  wc.hIconSm = LoadIcon(module_instance, IDI_ICON1);
 
   if (!RegisterClassEx(&wc))
   {

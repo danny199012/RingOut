@@ -461,6 +461,17 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core"
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/GXRuntime/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Externals/imgui/imgui/backends")
+    # Windows application icon (title bar + task bar): the .rc embeds
+    # assets/ringout.ico as resource group 101 (IDI_ICON1), which DolphinNoGUI
+    # PlatformWin32 loads for the game window class.
+    if(WIN32)
+        target_sources(moderngekko-run PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/ringout.rc")
+        # GNU windres searches -I dirs for resource file references; MSVC rc
+        # resolves "ringout.ico" relative to the .rc itself.
+        target_include_directories(moderngekko-run PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+    endif()
     target_compile_definitions(moderngekko-run PRIVATE
         MODERNGEKKO_REQUIRED_DISC_ID="GRSEAF")
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -510,6 +521,16 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
         MODERNGEKKO_FRONTEND_NAME="RingOut"
         MODERNGEKKO_USER_DIRECTORY_NAME="ringout"
         MODERNGEKKO_REQUIRED_DISC_ID="GRSEAF")
+    # Windows application icon (title bar + task bar): SDL3's Win32 class
+    # registration picks the first icon group from the exe (or the explicit
+    # SDL_WINDOWS_INTRESOURCE_ICON hint the launcher sets). Embedding 101 here
+    # is what makes the launcher window show the RingOut icon.
+    if(WIN32)
+        target_sources(moderngekko-launcher PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/ringout.rc")
+        target_include_directories(moderngekko-launcher PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+    endif()
     # The launcher only calls the game-inspection surface directly, but the
     # Dolphin static libraries still require the Host_* callbacks implemented
     # in the runtime object. Keep that object from being discarded by the
