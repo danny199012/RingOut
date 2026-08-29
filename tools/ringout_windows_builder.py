@@ -727,7 +727,8 @@ def assemble_package(
     # dolrecomp imports libwinpthread-1.dll (pthread_create/join/mutex_*).
     # Windows DLL search order checks the executable's directory first; without
     # it there the CRT init loop hits STATUS_CTRL_C_EXIT (-1073741515).
-    tc_bin = tools.clang.parent if tools.clang else None
+    # tools.clang is a plain string, so wrap it in Path to get its parent dir.
+    tc_bin = Path(tools.clang).parent if tools.clang else None
     if tc_bin:
         pth = tc_bin / "libwinpthread-1.dll"
         if pth.exists():
